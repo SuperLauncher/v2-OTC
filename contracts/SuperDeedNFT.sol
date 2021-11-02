@@ -147,7 +147,7 @@ contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable {
         emit DistributeTokens(block.timestamp, amount, fee);
     }
     
-    function getClaimable(uint id) public view returns (bool valid, uint amount, uint indexFrom, uint indexTo) {
+    function getClaimable(uint id) public view returns (bool valid, uint amount, uint indexFrom, uint indexTo, uint claimedSofar, uint totalEntitlement) {
         
         uint len = _tokenReleases.length;
         
@@ -156,19 +156,24 @@ contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable {
         
         // If there's token distribution(s) to be claimed, then indexFrom and indexTo will have valid values.
         // If not, they will default to 0 index.
-        if (valid && len > item.nextClaimIndex) {
+        if (valid) {
             
-            amount = ((totalTokensReleased - item.claimedPtr) * item.weight)/totalRaise;
-            indexFrom = item.nextClaimIndex;
-            indexTo = len - 1;
+            if (len > item.nextClaimIndex) {
+                amount = ((totalTokensReleased - item.claimedPtr) * item.weight)/totalRaise;
+                indexFrom = item.nextClaimIndex;
+                indexTo = len - 1;
+            }
+            totalEntitlement = (item.weight * asset.totalEntitlement) / totalRaise;
+            claimedSofar = (item.weight * item.claimedPtr) / totalRaise;
         }
     }
+    
     
     function claim(uint id) external {
         
         require(ownerOf(id) == msg.sender, "Not owner");
         
-        (bool valid, uint amt, , uint indexTo) = getClaimable(id);
+        (bool valid, uint amt, , uint indexTo, , ) = getClaimable(id);
         
         require(valid, "Invalid Id");
         require(amt > 0, "Zero amount to claim");

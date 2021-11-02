@@ -242,10 +242,11 @@ contract Marketplace is
         uint id;
         for (uint n=0; n<returnCount; n++) {
             id = set.at(indexFrom + n);
-            items[n] = _listings[nft][indexFrom+n];
+            items[n] = _listings[nft][id];
         }
         return (returnCount, items);
     }
+
     
     function getPrice(address nft, uint id) public view returns (bool valid, uint price, uint fee, Currency currency) {
         valid = _isListed(nft, id);
