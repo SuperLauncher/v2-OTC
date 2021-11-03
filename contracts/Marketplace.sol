@@ -47,6 +47,7 @@ contract Marketplace is
     mapping (Currency => address) private _supportedCurrencyMap;    
     
     struct Listing {
+        uint id;
         address seller;
         uint price;
         Currency currency;
@@ -364,7 +365,7 @@ contract Marketplace is
         _requireListed(nft, id, false);
         
         // Update global listing
-        _listings[nft][id] = Listing(user, price, currency);
+        _listings[nft][id] = Listing(id, user, price, currency);
         _nftListedIds[nft].add(id);
         
         // Update user listing
