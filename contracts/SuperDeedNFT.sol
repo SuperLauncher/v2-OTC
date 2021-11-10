@@ -6,10 +6,11 @@ pragma solidity ^0.8.0;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./interfaces/ISuperDeedNFT.sol";
 
 
-contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable {
+contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable, ReentrancyGuard {
 
     using SafeERC20 for ERC20;
     
@@ -18,11 +19,10 @@ contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable {
     uint private constant PCNT_100 = 1e6;
     uint private constant MAX_FEE_PCNT = 5e5; // 50%
         
-    address private _minter; // minter can mint and set totalRaise value
-    address private _distributor; // distributor can set asset address and distribute tokens
+    address public minter; // minter can mint and set totalRaise value
+    address public distributor; // distributor can set asset address and distribute tokens
     address public daoFeeAddress;
     uint public daoFeePcnt;
-    
     
     struct Asset {
         string symbol;
@@ -64,25 +64,26 @@ contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable {
     event DistributeTokens(uint timeStamp, uint total, uint fee);
     
     modifier onlyMinter() {
-        require(msg.sender == _minter, "Only minter can call");
+        require(msg.sender == minter, "Not minter");
         _;
     }
     
     modifier onlyDistributor() {
-        require(msg.sender == _distributor, "Only distributor can call");
+        require(msg.sender == distributor, "Not distributor");
         _;
     }
 
     constructor(
-        address minter, 
-        address distributor, 
+        address minterAddress, 
+        address distributorAddress, 
         address feeAddress, 
         string memory tokenSymbol, 
         string memory deedName
     ) ERC721(deedName, SUPER_DEED) 
     {
-        _minter = minter;    
-        _distributor = distributor;
+        require(minterAddress != address(0) && distributorAddress != address(0) && feeAddress != address(0), "Invalid address");
+        minter = minterAddress;    
+        distributor = distributorAddress;
         daoFeeAddress = feeAddress;
         asset.symbol = tokenSymbol;
         asset.deedName = deedName;
@@ -99,7 +100,7 @@ contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable {
     
     // Note: this is called by the Campaign upon finishUp(). Called once only.
     function setTotalRaise(uint raised, uint entitledTokens) external override onlyMinter {
-        require(totalRaise == 0, "Can only be called once");
+        require(totalRaise == 0, "Already called");
         require(raised > 0 && entitledTokens > 0, "Invalid value");
         totalRaise = raised;
         asset.totalEntitlement = entitledTokens;
@@ -110,7 +111,7 @@ contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable {
     }
     
     function setDaoFee(uint feePcnt) external onlyDistributor {
-        require(feePcnt <= MAX_FEE_PCNT, "Exceeded fee percent");
+        require(feePcnt <= MAX_FEE_PCNT, "Exceeded 100%");
         daoFeePcnt = feePcnt;
     }
     
@@ -119,15 +120,13 @@ contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable {
     // then distributor will be able to change BEFORE making first distribution. But once first distributon is made,
     // token address cannot be changed anymore.
     function setAssetAddress(address tokenAddress) external  onlyDistributor {
-        require(tokenAddress != address(0), "Invalid asset address");
-        require(_tokenReleases.length == 0, "Cannot set token address after distribution");
-        
+        require(tokenAddress != address(0) && _tokenReleases.length == 0, "Cannot set address");
+     
         asset.tokenAddress = tokenAddress;
     }
     
     function distributeTokens(uint amount) external onlyDistributor {
-        require(asset.tokenAddress != address(0), "Invalid asset address");
-        require(amount > 0, "Invalid amount");
+        require(asset.tokenAddress != address(0) && amount > 0, "Cannot distribute");
         
         // Transfer in tokens
         ERC20(asset.tokenAddress).safeTransferFrom(msg.sender, address(this), amount);
@@ -169,15 +168,14 @@ contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable {
     }
     
     
-    function claim(uint id) external {
+    function claim(uint id) external nonReentrant {
         
         require(ownerOf(id) == msg.sender, "Not owner");
         
         (bool valid, uint amt, , uint indexTo, , ) = getClaimable(id);
         
-        require(valid, "Invalid Id");
-        require(amt > 0, "Zero amount to claim");
-        
+        require(valid && amt > 0, "Invalid claim");
+
         ERC20(asset.tokenAddress).safeTransfer(msg.sender, amt);
         
         NftInfo storage item = _nftInfoMap[id];
@@ -221,17 +219,18 @@ contract SuperDeedNFT is ISuperDeedNFT, ERC721Enumerable {
     
     // When we combine 2 NFT, we need to make sure that the 2 NFT claim status is same.
     // Otherwise, the user should claim the tokens (distribution) before combining. 
-    function combine(uint id1, uint id2) external {
+    function combine(uint id1, uint id2) external nonReentrant {
          require(ownerOf(id1) == msg.sender && ownerOf(id2) == msg.sender, "Not owner");
-         require(_nftInfoMap[id1].nextClaimIndex == _nftInfoMap[id2].nextClaimIndex, "Please claim before combining");
+         require(_nftInfoMap[id1].nextClaimIndex == _nftInfoMap[id2].nextClaimIndex, "Claim before combining");
          
          _nftInfoMap[id1].weight += _nftInfoMap[id2].weight;
          
          // Burn NFT 2 
          _burn(id2);
+         delete _nftInfoMap[id2];
     }
     
-    function _splitByAmount(uint id, uint amount) internal returns (uint newId) {
+    function _splitByAmount(uint id, uint amount) internal nonReentrant returns (uint newId) {
         
         require(ownerOf(id) == msg.sender, "Not owner");
        

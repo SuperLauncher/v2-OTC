@@ -12,15 +12,18 @@ import "@openzeppelin/contracts-upgradeable/utils/introspection/ERC165CheckerUpg
 import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC721/IERC721Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "../interfaces/IEmergency.sol";
 
 
 contract MockMarketplace is 
     Initializable, 
     OwnableUpgradeable,
     IERC721ReceiverUpgradeable,
-    ReentrancyGuardUpgradeable
+    ReentrancyGuardUpgradeable,
+    IEmergency
 {
- using SafeERC20Upgradeable for IERC20Upgradeable;
+    
+    using SafeERC20Upgradeable for IERC20Upgradeable;
     using EnumerableSetUpgradeable for EnumerableSetUpgradeable.UintSet;
     using EnumerableSetUpgradeable for EnumerableSetUpgradeable.AddressSet;
 
@@ -44,6 +47,7 @@ contract MockMarketplace is
     mapping (Currency => address) private _supportedCurrencyMap;    
     
     struct Listing {
+        uint id;
         address seller;
         uint price;
         Currency currency;
@@ -64,7 +68,14 @@ contract MockMarketplace is
      
     // Supported NFTs
     EnumerableSetUpgradeable.AddressSet private _allowedNFTs; // Only whitelisted NFTs are allowed to be sold.
-    
+   
+    // Events
+    event AddListing(address indexed seller, address indexed nftAddress, uint indexed id, uint price, Currency currency);
+    event ChangeListingPrice(address indexed seller, address indexed nftAddress, uint indexed id, uint newPrice, Currency newCurrency);
+    event CancelListing(address indexed seller, address indexed nftAddress, uint indexed id);
+    event Buy(address indexed seller, address buyer, address indexed nftAddress, uint indexed id, uint price, uint fee, Currency currency);
+    event DaoMultiSigEmergencyWithdraw(address to, address tokenAddress, uint amount);
+    event SetFee(uint oldFee, uint newFee);
     
     function initialize(address feeAddress) public initializer {
         __Ownable_init();
@@ -82,6 +93,21 @@ contract MockMarketplace is
     ) external override view returns (bytes4) {
         // NOTE: The contract address is always the message sender.
         return IERC721ReceiverUpgradeable.onERC721Received.selector;
+    }
+
+        // Misc 
+    
+    function daoMultiSigEmergencyWithdraw(address to, address tokenAddress, uint amount) external override onlyOwner {
+       
+        if (amount > 0 && to != address(0)) {
+            if (tokenAddress == address(0)) {
+                (bool success, ) = to.call{ value: amount}("");
+                require(success, "Withdraw Error");
+            } else {
+                 IERC20Upgradeable(tokenAddress).safeTransfer(to, amount); 
+            }
+            emit DaoMultiSigEmergencyWithdraw(to, tokenAddress, amount);
+        }
     }
 }
 

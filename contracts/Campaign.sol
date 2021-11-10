@@ -8,11 +8,12 @@ pragma solidity ^0.8.0;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Snapshot.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./interfaces/ISuperDeedNFT.sol";
 import "./interfaces/IEmergency.sol";
 
  
-contract Campaign is IEmergency  {
+contract Campaign is IEmergency, ReentrancyGuard  {
     using SafeERC20 for ERC20;
 
     uint private constant FACTOR = 1e8; // factor to reduce math truncational error //
@@ -31,7 +32,6 @@ contract Campaign is IEmergency  {
     uint public startDate;
     uint public endDate;
     uint public midDate;
-    bool public setupReady;
     
     uint private _minPublicBuyLimit;            
     uint private _maxPublicBuyLimit;    
@@ -42,6 +42,7 @@ contract Campaign is IEmergency  {
     uint private _allocForUpperSvLaunch;
     uint private _mSlope; // Y = m*X + C 
     
+    bool private _initialized;
     
     struct Purchase {
         uint privateAmount; // amount user bought in private
@@ -65,17 +66,20 @@ contract Campaign is IEmergency  {
     uint256 public totalSold; // Total sales so far.
 
     // States
+    bool public setupReady;
     bool public finishUpSuccess; 
     bool public cancelled;     
-    bool public readyToClaimNFT;
+
 
     // Map user address to amount invested //
     mapping(address => Purchase) public purchases; 
     
     // History 
-    mapping(address => History[]) public history; 
+    mapping(address => History[]) private _history; 
     
     // Events
+    event Setup(address indexed caller);
+    event SetCancelled(address indexed caller);
     event Purchased(address indexed user, uint timeStamp, bool privateSale, uint amount);
     event ClaimedNFT(address indexed user, uint timeStamp, uint id);
     event Refund(address indexed user, uint timeStamp, uint amount);
@@ -83,7 +87,7 @@ contract Campaign is IEmergency  {
     
 
     modifier onlyFactory() {
-        require(msg.sender == factory, "Only factory can call");
+        require(msg.sender == factory, "Not factory");
         _;
     }
 
@@ -99,6 +103,9 @@ contract Campaign is IEmergency  {
         address currencyToken
     ) onlyFactory external
     {
+        require(!_initialized, "already initialized");
+        _initialized = true;
+        
         svLaunchAddress = svLaunch;
         campaignOwner = campOwner; 
         deedNftAddress = deed;
@@ -129,16 +136,16 @@ contract Campaign is IEmergency  {
         _maxPublicBuyLimit = publicBuyLimits[1];
         _mSlope = FACTOR * (_allocForUpperSvLaunch - _allocForLowerSvLaunch) / (_upperSvLaunch - _lowerSvLaunch);
         setupReady = true;
+        emit Setup(msg.sender);
     }
  
-    function buyFund(uint amount) external {
+    function buyFund(uint amount) external nonReentrant {
         
-        require(setupReady, "Not setup yet");
-        require(isLive(), "Campaign is not live");
+        require(setupReady, "Not setup");
+        require(isLive(), "Not live");
         
         (uint min, uint max) = getMinMaxPurchasable(msg.sender);
-        require(amount >= min, "Less than min amount");
-        require(amount <= max, "Exceeded available amount");
+        require(amount >= min && amount <= max, "Invalid amount");
         
         totalSold += amount;
         ERC20(currencyAddress).safeTransferFrom(msg.sender, address(this), amount);
@@ -155,18 +162,17 @@ contract Campaign is IEmergency  {
         emit Purchased(msg.sender, block.timestamp, true, amount);
     }
 
-    function finishUp() external {
+    function finishUp() external nonReentrant {
         
-        require(setupReady, "Not setup yet");
-        require(!finishUpSuccess, "finishUp is already called");
-        require(!isLive(), "Presale is still live");
-        require(!failedOrCancelled(), "Presale failed or cancelled");
-        require(softCap <= totalSold, "Did not reach soft cap");
+        require(setupReady, "Not setup");
+        require(!finishUpSuccess, "Already called");
+        require(!isLive(), "Still live");
+        require(!failedOrCancelled(), "Failed or cancelled");
+        require(softCap <= totalSold, "Fail soft cap");
         finishUpSuccess = true;
 
         // Send raised fund to Campaign Owner (MultiSig).
         ERC20(currencyAddress).safeTransfer(campaignOwner, totalSold);
-        readyToClaimNFT = true;
         
         
         //totalFutureTokens
@@ -174,15 +180,15 @@ contract Campaign is IEmergency  {
         ISuperDeedNFT(deedNftAddress).setTotalRaise(totalSold, entitlement);
     }
 
-    function claimNFT() external {
+    function claimNFT() external nonReentrant {
 
-        require(readyToClaimNFT, "NFT not ready to claim yet");
+        require(finishUpSuccess, "Not ready");
      
         Purchase storage item = purchases[msg.sender];
-        require(!item.mintedNFT, "Already Minted NFT");
+        require(!item.mintedNFT, "Already claimed");
         
         uint total = item.privateAmount + item.publicAmount;
-        require(total > 0 ,"Did not purchase");
+        require(total > 0 ,"Did not buy");
         item.mintedNFT = true;
         
         // Mint NFT
@@ -193,14 +199,14 @@ contract Campaign is IEmergency  {
          
     }
 
-    function refund() external {
-        require(failedOrCancelled(),"Can refund for failed or cancelled campaign only");
+    function refund() external nonReentrant {
+        require(failedOrCancelled(),"Not failed or cancelled");
 
         Purchase storage item = purchases[msg.sender];
-        require(!item.refunded, "Already Refunded");
+        require(!item.refunded, "Already refunded");
         
         uint total = item.privateAmount + item.publicAmount;
-        require(total > 0 ,"You did not participate in the campaign");
+        require(total > 0 ,"Did not buy");
         
         item.refunded = true;   
             
@@ -232,6 +238,7 @@ contract Campaign is IEmergency  {
         require(!finishUpSuccess, "Too late to cancel");
         
         cancelled = true;
+        emit SetCancelled(msg.sender);
     }
     
     function getMinMaxPurchasable(address user) public view returns (uint min, uint max) {
@@ -253,17 +260,18 @@ contract Campaign is IEmergency  {
         (uint min, uint max) =  _getAllocation(user);
         return (min > 0 && max > 0);
     }
- 
+    
+    
     function getHistoryCount(address user) external view returns (uint) {
-        return history[user].length;
+        return _history[user].length;
     }
     
     function getHistoryItem(address user, uint index) external view returns (History memory) {
-        return history[user][index];
+        return _history[user][index];
     }
     
     function getHistoryList(address user) external view returns (History[] memory) {
-        return history[user];
+        return _history[user];
     }
     
     function daoMultiSigEmergencyWithdraw(address to, address tokenAddress, uint amount) external override onlyFactory {
@@ -308,7 +316,7 @@ contract Campaign is IEmergency  {
         
     function _recordHistory(address user, Action action, uint amount) private {
         History memory item = History(uint128(block.timestamp), uint128(action), amount);
-        history[user].push(item);
+        _history[user].push(item);
     }
     
     function _min(uint256 a, uint256 b) private pure returns (uint256) {

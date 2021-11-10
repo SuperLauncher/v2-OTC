@@ -70,14 +70,15 @@ contract Marketplace is
     EnumerableSetUpgradeable.AddressSet private _allowedNFTs; // Only whitelisted NFTs are allowed to be sold.
    
     // Events
-    event AddListing(address indexed seller, address indexed nftAddress, uint indexed id, uint price);
+    event AddListing(address indexed seller, address indexed nftAddress, uint indexed id, uint price, Currency currency);
     event ChangeListingPrice(address indexed seller, address indexed nftAddress, uint indexed id, uint newPrice, Currency newCurrency);
     event CancelListing(address indexed seller, address indexed nftAddress, uint indexed id);
-    event Buy(address indexed seller, address buyer, address indexed nftAddress, uint indexed id, uint price, uint fee);
+    event Buy(address indexed seller, address buyer, address indexed nftAddress, uint indexed id, uint price, uint fee, Currency currency);
     event DaoMultiSigEmergencyWithdraw(address to, address tokenAddress, uint amount);
-    
+    event SetFee(uint oldFee, uint newFee);
     
     function initialize(address feeAddress) public initializer {
+        require(feeAddress != address(0));
         __Ownable_init();
         __ReentrancyGuard_init();
 
@@ -95,6 +96,7 @@ contract Marketplace is
 
     function setFee(uint newFeePcnt) external onlyOwner {
         require(newFeePcnt <= MAX_FEE_PCNT, "Exceeded max fee percent");
+        emit SetFee(feePcnt, newFeePcnt);
         feePcnt = newFeePcnt;
     }
     
@@ -167,7 +169,7 @@ contract Marketplace is
     function addListing(address nft, uint id, uint price, Currency currency) external nonReentrant {
         _recordListing(nft, id, price, currency, msg.sender);
         IERC721Upgradeable(nft).safeTransferFrom(msg.sender, address(this), id);
-        emit AddListing(msg.sender, nft, id, price);
+        emit AddListing(msg.sender, nft, id, price, currency);
     }
     
     // User or admin can cancel this listing //
@@ -217,7 +219,7 @@ contract Marketplace is
         // Transfer NFT from marketplace to buyer
         IERC721Upgradeable(nft).safeTransferFrom(address(this), msg.sender, id);
         
-        emit Buy(seller, msg.sender, nft, id, price, fee);
+        emit Buy(seller, msg.sender, nft, id, price, fee, currency);
         
     }
 
